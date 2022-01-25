@@ -6,6 +6,8 @@ import os
 from matplotlib import pyplot as plt
 import natsort
 import numpy as np
+from shapely.geometry import Polygon, Point
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--images")
@@ -30,11 +32,6 @@ def find_keypoints(img1_path, img2_path):
         p2 = kp2[match.trainIdx].pt
         
         keypoints.append([p1, p2])
-    
-    # match_img = cv2.drawMatches(img1, kp1, img2, kp2, matches, None)
-    # cv2.imshow("img", match_img)
-    # cv2.waitKey(0)
-    # cv2.destroyAllWindows()
 
     keypoints = np.array([np.array(xi) for xi in keypoints])
     return keypoints
@@ -76,12 +73,7 @@ def find_homography_matrix(keypoints, iterations=100, epsilon=4):
     return best_homography
     
 def calculate_homography_matrix(keypoints):
-
-    # homography matrix computed for each img1, img2 pair
-    # print(keypoints)
-    # h, status = cv2.findHomography(keypoints[:, 0], keypoints[:,1])
-    # print('h', h)
-
+    
     A = np.zeros(shape=(2*len(keypoints),9))
     
     for index in range(0, len(keypoints)):
@@ -101,45 +93,53 @@ def calculate_homography_matrix(keypoints):
     return np.reshape(homography, (3, 3))
     
 def warp_images(img1_path, img2_path, homography):
-    #warp img1 onto img2
-    #get bounding box of src_img by doing forward homography
-    img1 = cv2.imread(img1_path, cv2.IMREAD_GRAYSCALE)
-    img2 = cv2.imread(img2_path, cv2.IMREAD_GRAYSCALE)
+    # warp img1 onto img2
+    # get bounding box of src_img by doing forward homography
+    img1 = cv2.imread(img1_path)
+    img2 = cv2.imread(img2_path)
 
-    y_bound, x_bound = img1.shape
-    # im_dst = cv2.warpPerspective(img2, homography, img2.shape)
-    # cv2.imshow("Destination Image", im_dst)
-    # cv2.imshow("src", img1)
-    # cv2.waitKey(0)
-
+    img1_y_bound, img1_x_bound, _ = img1.shape
+    img2_y_bound, img2_x_bound, _ = img2.shape
+    
     ul = homography @ np.array([0,0,1])
-    ur = homography @ np.array([x_bound,0,1])
-    ll = homography @ np.array([0,y_bound,1])
-    lr = homography @ np.array([x_bound,y_bound,1])
+    ur = homography @ np.array([img1_x_bound,0,1])
+    ll = homography @ np.array([0,img1_y_bound,1])
+    lr = homography @ np.array([img1_x_bound,img1_y_bound,1])
     
-    bounding_box = np.array([ul, ur, ll, lr])
+    ul = np.divide(ul, ul[2])
+    ur = np.divide(ur, ur[2])
+    ll = np.divide(ll, ll[2])
+    lr = np.divide(lr, lr[2])
     
-    # lables = ['ul', 'ur', 'll', 'lr']
-    # print(bounding_box)
-    # cv2.drawContours(img1, [ul, ur, ll, lr], -1, (0, 255, 0), 3)
+    # src_bounding_box = np.array([ul[:2], ur[:2], lr[:2], ll[:2], ul[:2]])
+    src_polygon = Polygon([ul[:2], ur[:2], lr[:2], ll[:2], ul[:2]])
 
-    # image = cv2.polylines(img1, [bounding_box], isClosed=True, color=(255, 0, 0), thickness=2)
-    # plt.gca().invert_yaxis()
-    # plt.xlim((0, 320))
-    plt.scatter(np.divide(bounding_box[:, 0], bounding_box[:, 2]), np.divide(bounding_box[:, 1], bounding_box[:, 2]))
-    # for i in range(len(lables)):
-    #     plt.annotate(lables[i], (bounding_box[i, 0], bounding_box[i, 1]))
-    plt.show()
+    # des_bounding_box = np.array([[0, 0], [0, img1_y_bound], [img1_x_bound, img2_y_bound], [img1_x_bound, 0], [0,0]])
+    des_polygon = Polygon([[0, 0], [0, img1_y_bound], [img1_x_bound, img2_y_bound], [img1_x_bound, 0], [0,0]])
+    
+    des_img_height = math.ceil(np.max([abs(ul[1]-ll[1]), abs(ur[1]-lr[1]), abs(img2_y_bound-ll[1]), abs(img2_y_bound-ur[1]), img2_y_bound]))
+    des_img_width = math.ceil(np.max([abs(ul[0]-ll[0]), abs(ur[0]-lr[0]), abs(img2_x_bound-ll[0]), abs(img2_x_bound-ur[0]), img2_x_bound]))
+    
+    pano_image = np.zeros((des_img_height, des_img_width, 3), np.uint8)
+    # xs, ys = zip(*src_bounding_box) #create lists of x and y values
+    # xd, yd = zip(*des_bounding_box)
 
-    # cv2.imshow('image', image)
-    # cv2.waitKey(0)
-    # cv2.destroyAllWindows()
+    # plt.figure()
+    # plt.plot(xs,ys) 
+    # plt.plot(xd, yd)
+    # plt.show()
+    inv_homography = np.linalg.inv(homography)
+    for i in range(des_img_height):
+        for j in range(des_img_width):
+            if src_polygon.contains(Point(i, j)):
+                src_coords = inv_homography @ [i, j, 1]
+                src_coords = np.divide(src_coords, src_coords[2])
+                pano_image[j, i] = img1[math.floor(src_coords[1]), math.floor(src_coords[0])]
+            elif des_polygon.contains(Point(i, j)):
+                pano_image[j, i] = img2[j, i]
+                
+    return pano_image
     
-    
-    # for i in range(rows):
-    #     for j in range(cols):
-            
-    # dest_img = cv2.
 
 if __name__ == "__main__":
     images_path = args.images
@@ -147,22 +147,24 @@ if __name__ == "__main__":
     images = os.listdir(images_path)
     images = natsort.natsorted(images) #sorts images by number
     
+    src_img_path = os.path.join(images_path, images[0])
+    
     for index in range(0, len(images) - 1):
         
-        img1_path = os.path.join(images_path, images[index])
-        img2_path = os.path.join(images_path, images[index+1])
+        des_img_path = os.path.join(images_path, images[index+1])
         
-        matching_keypoints = find_keypoints(img1_path, img2_path)
+        matching_keypoints = find_keypoints(src_img_path, des_img_path)
         
-        iterations = math.ceil(math.log(1-0.99)/ math.log(1- (1-0.8)**4))
-        # print(iterations)
+        iterations = math.ceil(math.log(1-0.99)/ math.log(1- (1-0.5)**4))
         homography = find_homography_matrix(matching_keypoints, iterations=iterations)
         
-        # point = np.array([matching_keypoints[0][0]])
-        # point = np.append(point, [1])
-        # h = homography @ point
-        # print(h/point[2])
-        warp_images(img1_path, img2_path, homography)
+        pano_image = warp_images(src_img_path, des_img_path, homography)
+        cv2.imwrite(os.path.join(images_path, 'pano_img.jpg'), pano_image)    
+        cv2.imshow("image", pano_image)
+        
+        src_img_path = os.path.join(images_path, 'pano_img.jpg')
+    
+    print("Panoramic Image saved at", src_img_path)
         
         
         
