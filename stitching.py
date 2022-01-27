@@ -13,14 +13,30 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--images")
 args = parser.parse_args()
 
-def find_keypoints(img1_path, img2_path):
-    
-    img1 = cv2.imread(img1_path, cv2.IMREAD_GRAYSCALE)
-    img2 = cv2.imread(img2_path, cv2.IMREAD_GRAYSCALE)
+# elif des_polygon.contains(Point(i, j)):
+                
+            #     try:
+            #         if np.array_equal(des_homography, src_homography):
+            #             pano_image[j-y_img_min, i] = img2[j, i]
+            #         else:
+            #             des_inv_homography = np.linalg.inv(des_homography)
+            #             des_coords = des_inv_homography @ [i, j, 1]
+            #             des_coords = np.divide(des_coords, des_coords[2])  
+
+            #             pano_image[j-y_img_min, i] = img2[math.floor(des_coords[1]), math.floor(des_coords[0])]
+            #     except Exception as e:
+            #         print(e)
+            #         print(j-y_img_min, i, j, i)
+            #         print(img2.shape)
+            #         plt.imshow(pano_image)
+            #         plt.show()
+            #         raise
+
+def find_keypoints(src_img, dest_img):
     
     sift = cv2.SIFT_create()
-    kp1, des1 = sift.detectAndCompute(img1, None)
-    kp2, des2 = sift.detectAndCompute(img2, None)
+    kp1, des1 = sift.detectAndCompute(src_img, None)
+    kp2, des2 = sift.detectAndCompute(dest_img, None)
 
     bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
     matches = bf.match(des1, des2)
@@ -33,7 +49,17 @@ def find_keypoints(img1_path, img2_path):
         
         keypoints.append([p1, p2])
 
+    # img3 = cv2.drawMatches(img1,kp1,img2,kp2, matches[:50], img1)
+    # plt.imshow(img3)
+    # plt.show()
     keypoints = np.array([np.array(xi) for xi in keypoints])
+    
+    # if type(previous_homography) == np.ndarray:
+    #     for keypoint in keypoints:
+    #         new_kp = previous_homography @ np.array([keypoint[1][0], keypoint[1][1], 1])
+    #         new_kp = np.divide(new_kp, new_kp[2])
+    #         keypoint[1] = np.array([new_kp[0], new_kp[1]])
+    
     return keypoints
 
 def find_homography_matrix(keypoints, iterations=100, epsilon=4):
@@ -67,9 +93,7 @@ def find_homography_matrix(keypoints, iterations=100, epsilon=4):
         if num_inliers > best_num_inliers:
             best_num_inliers = num_inliers
             best_homography = homography
-        
-    # print(best_num_inliers, homography)  
-    
+            
     return best_homography
     
 def calculate_homography_matrix(keypoints):
@@ -89,85 +113,161 @@ def calculate_homography_matrix(keypoints):
     
     u, s, vh = np.linalg.svd(A)
     homography = vh[len(vh) - 1]
+    
+    homography = vh[len(vh) - 1]
+    homography = np.reshape(homography, (3, 3))
+    homography = np.divide(homography, homography[2][2])
 
     return np.reshape(homography, (3, 3))
     
-def warp_images(img1_path, img2_path, homography):
-    # warp img1 onto img2
-    # get bounding box of src_img by doing forward homography
-    img1 = cv2.imread(img1_path)
-    img2 = cv2.imread(img2_path)
-
+def warp_images(src_img_path, des_img_path, des_homography, prev_homographies, pano_path):
+   
+    img1 = cv2.imread(src_img_path)
+    img2 = cv2.imread(des_img_path)
+    
     img1_y_bound, img1_x_bound, _ = img1.shape
     img2_y_bound, img2_x_bound, _ = img2.shape
     
+    if len(prev_homographies) > 0:
+        src_homography = np.identity(3)
+        for hmg in prev_homographies:
+            src_homography = src_homography  @ hmg
+        src_homography = src_homography @ des_homography
+        src_polygon = get_polygon(src_homography, img1_x_bound, img1_y_bound) 
+        des_polygon = get_polygon(des_homography, img2_x_bound, img2_y_bound)
+    else:
+        src_homography = des_homography
+        src_polygon = get_polygon(src_homography, img1_x_bound, img1_y_bound) 
+        des_polygon = get_polygon(None, img2_x_bound, img2_y_bound)
+    
+    # src_polygon = get_polygon(src_homography, img1_x_bound, img1_y_bound) 
+    # des_polygon = get_polygon(None, img2_x_bound, img2_y_bound)
+    
+    xs, ys = src_polygon.exterior.coords.xy
+    xd, yd = des_polygon.exterior.coords.xy
+
+    # plt.figure()
+    # plt.gca().invert_yaxis()
+    # plt.plot(xs,ys) 
+    # plt.plot(xd,yd)
+    # plt.show()
+    
+    y_img_min = round(np.min(ys))
+    y_img_max = round(np.max(ys))
+    
+    x_img_min = round(np.min(xs))
+    x_img_max = round(np.max(xs))
+    
+    des_img_height = y_img_max - y_img_min
+    des_img_width  = x_img_max - x_img_min
+    
+    print(des_img_height, des_img_width)
+    
+    #copy old panoramic to new one
+    if pano_path == '':
+        pano_image = np.zeros((des_img_height + 1, des_img_width + 1, 3), np.uint8)
+        pano_image[0:img2.shape[0], 0:img2.shape[1]] = img2[0:img2.shape[0], 0:img2.shape[1]]
+        
+        prev_width_end = 0
+        prev_height_end = 0
+        
+    else:
+        prev_pano_image = cv2.imread(pano_img_path)
+        pano_image = np.zeros((des_img_height + 1, des_img_width + 1, 3), np.uint8)
+        
+        prev_width_end = prev_pano_image.shape[1]
+        prev_height_end = prev_pano_image.shape[0]
+        
+        try:
+            pano_image[0:prev_height_end, 0:prev_width_end] = prev_pano_image[0:prev_height_end, 0:prev_width_end]
+        except:
+            print("out of range")
+            
+    src_inv_homography = np.linalg.inv(src_homography)
+    
+    print('prev', prev_width_end, prev_height_end)
+    
+    for i in range(des_img_width):
+        for j in range(des_img_height):
+            if src_polygon.contains(Point(i, j)):
+                
+                src_coords = src_inv_homography @ [i, j, 1]
+                src_coords = np.divide(src_coords, src_coords[2])
+                try:
+                    pano_image[j, i] = img1[math.floor(src_coords[1]), math.floor(src_coords[0])]
+                except Exception as e:
+                    print(e)
+                    print(j, i, math.floor(src_coords[1]), math.floor(src_coords[0]))
+                    print(pano_image.shape,  img2.shape)
+                    plt.imshow(pano_image)
+                    plt.show()
+                    raise
+        
+    return pano_image
+    
+def get_polygon(homography, x_bound, y_bound):
+
+    if type(homography) == type(None):
+        return Polygon([[0, 0], [x_bound, 0], [x_bound, y_bound], [0, y_bound], [0, 0]])
+    
     ul = homography @ np.array([0,0,1])
-    ur = homography @ np.array([img1_x_bound,0,1])
-    ll = homography @ np.array([0,img1_y_bound,1])
-    lr = homography @ np.array([img1_x_bound,img1_y_bound,1])
+    ur = homography @ np.array([x_bound,0,1])
+    ll = homography @ np.array([0, y_bound,1])
+    lr = homography @ np.array([x_bound,y_bound,1])
     
     ul = np.divide(ul, ul[2])
     ur = np.divide(ur, ur[2])
     ll = np.divide(ll, ll[2])
     lr = np.divide(lr, lr[2])
     
-    # src_bounding_box = np.array([ul[:2], ur[:2], lr[:2], ll[:2], ul[:2]])
-    src_polygon = Polygon([ul[:2], ur[:2], lr[:2], ll[:2], ul[:2]])
+    polygon = Polygon([ul[:2], ur[:2], lr[:2], ll[:2], ul[:2]])
 
-    # des_bounding_box = np.array([[0, 0], [0, img1_y_bound], [img1_x_bound, img2_y_bound], [img1_x_bound, 0], [0,0]])
-    des_polygon = Polygon([[0, 0], [0, img1_y_bound], [img1_x_bound, img2_y_bound], [img1_x_bound, 0], [0,0]])
+    return polygon
     
-    des_img_height = math.ceil(np.max([abs(ul[1]-ll[1]), abs(ur[1]-lr[1]), abs(img2_y_bound-ll[1]), abs(img2_y_bound-ur[1]), img2_y_bound]))
-    des_img_width = math.ceil(np.max([abs(ul[0]-ll[0]), abs(ur[0]-lr[0]), abs(img2_x_bound-ll[0]), abs(img2_x_bound-ur[0]), img2_x_bound]))
-    
-    pano_image = np.zeros((des_img_height, des_img_width, 3), np.uint8)
-    # xs, ys = zip(*src_bounding_box) #create lists of x and y values
-    # xd, yd = zip(*des_bounding_box)
-
-    # plt.figure()
-    # plt.plot(xs,ys) 
-    # plt.plot(xd, yd)
-    # plt.show()
-    inv_homography = np.linalg.inv(homography)
-    for i in range(des_img_height):
-        for j in range(des_img_width):
-            if src_polygon.contains(Point(i, j)):
-                src_coords = inv_homography @ [i, j, 1]
-                src_coords = np.divide(src_coords, src_coords[2])
-                pano_image[j, i] = img1[math.floor(src_coords[1]), math.floor(src_coords[0])]
-            elif des_polygon.contains(Point(i, j)):
-                pano_image[j, i] = img2[j, i]
-                
-    return pano_image
-    
-
 if __name__ == "__main__":
     images_path = args.images
+    pano_image_path = 'pano_img.jpg'
     
     images = os.listdir(images_path)
     images = natsort.natsorted(images) #sorts images by number
     
-    src_img_path = os.path.join(images_path, images[0])
-    
-    for index in range(0, len(images) - 1):
+    # base_img = os.path.join(images_path, images[0])
+    previous_homographies = []
+    for index in range(1, len(images) - 3):
+
+        src_img_path = os.path.join(images_path, images[index])
+        des_img_path = os.path.join(images_path, images[index - 1])
         
-        des_img_path = os.path.join(images_path, images[index+1])
+        pano_img_path = os.path.join(images_path, pano_image_path)
         
-        matching_keypoints = find_keypoints(src_img_path, des_img_path)
+        src_img = cv2.imread(src_img_path, cv2.IMREAD_GRAYSCALE)
+        des_img = cv2.imread(des_img_path, cv2.IMREAD_GRAYSCALE)
+        
+        matching_keypoints = find_keypoints(src_img, des_img)
         
         iterations = math.ceil(math.log(1-0.99)/ math.log(1- (1-0.5)**4))
         homography = find_homography_matrix(matching_keypoints, iterations=iterations)
         
-        pano_image = warp_images(src_img_path, des_img_path, homography)
-        cv2.imwrite(os.path.join(images_path, 'pano_img.jpg'), pano_image)    
-        cv2.imshow("image", pano_image)
+        # homography_arr.append(homography)
         
-        src_img_path = os.path.join(images_path, 'pano_img.jpg')
+        # need to multiple homogrpahies 12 23 34 to get 14
+        if index == 1:
+            pano_image = warp_images(src_img_path, des_img_path, homography, previous_homographies, pano_path='')
+        else:
+            pano_image = warp_images(src_img_path, des_img_path, homography, previous_homographies, pano_path=pano_img_path)
+        #     pano_image = warp_images(src_img_path, pano_img_path, homography, previous_homographies)
+        
+        cv2.imwrite(pano_img_path, pano_image)    
+        cv2.imshow("image", pano_image)
+        cv2.waitKey(0)
+        
+        previous_homographies.append(homography)
     
     print("Panoramic Image saved at", src_img_path)
         
         
         
+
 
     
     
