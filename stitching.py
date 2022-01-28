@@ -96,7 +96,7 @@ def calculate_homography_matrix(keypoints):
 
     return np.reshape(homography, (3, 3))
     
-def warp_images(src_img_path, des_img_path, des_homography, prev_homographies, pano_path):
+def warp_images(src_img_path, des_img_path, des_homography, prev_homographies, previous_y_shift, pano_path):
    
     img1 = cv2.imread(src_img_path)
     img2 = cv2.imread(des_img_path)
@@ -129,58 +129,71 @@ def warp_images(src_img_path, des_img_path, des_homography, prev_homographies, p
     des_img_height = y_img_max - y_img_min
     des_img_width  = x_img_max - x_img_min
     
-    # print(des_img_height, des_img_width)
-    
     #copy old panoramic to new one
-    if pano_path == '':
-        pano_image = np.zeros((y_img_max, x_img_max, 3), np.uint8)
-        pano_image[0:img2.shape[0], 0:img2.shape[1]] = img2[0:img2.shape[0], 0:img2.shape[1]]
+    if pano_path == '':        
+        pano_start = abs(y_img_min)
+        pano_end = img2.shape[0] + pano_start
+                
+        pano_image = np.zeros((y_img_max - y_img_min, x_img_max, 3), np.uint8)
+        pano_image[pano_start:pano_end, 0:img2.shape[1]] = img2[0:img2.shape[0], 0:img2.shape[1]]
         
     else:
         prev_pano_image = cv2.imread(pano_img_path)
-        pano_image = np.zeros((y_img_max, x_img_max, 3), np.uint8)
+        pano_image = np.zeros((y_img_max - y_img_min, x_img_max, 3), np.uint8)
+        
+        pano_start = abs(y_img_min - previous_y_shift) 
+        pano_end = prev_pano_image.shape[0] + pano_start
         
         prev_width_end = prev_pano_image.shape[1]
         prev_height_end = prev_pano_image.shape[0]
-                
-        pano_image[0:prev_height_end, 0:prev_width_end] = prev_pano_image[0:prev_height_end, 0:prev_width_end]
-    
-    # start = time.time()
+                        
+        pano_image[pano_start:pano_end, 0:prev_width_end] = prev_pano_image[0:prev_height_end, 0:prev_width_end]
+
+        # plt.imshow(pano_image)
+        # plt.show()
+        
     x, y = np.meshgrid(np.arange(x_img_min, x_img_max), np.arange(y_img_min, y_img_max)) # make a canvas with coordinates
     x, y = x.flatten(), y.flatten()
     points = np.vstack((x,y)).T
-    
-    # print(points)
-    
+        
     grid = src_polygon.contains_points(points)
     mask = grid.reshape(des_img_height, des_img_width).T # now you have a mask with points inside a polygon
     
     temp_src_points = np.argwhere(mask)
     
     src_points = np.empty((3, temp_src_points.shape[0]), dtype=int)
-    src_points[0] = np.add(temp_src_points[:, 0], x_img_min)
-    src_points[1] = np.add(temp_src_points[:, 1], y_img_min)
+    src_points[0] = np.add(temp_src_points[:, 0], x_img_min) #shift the homography image to new place
+    src_points[1] = np.add(temp_src_points[:, 1], y_img_min) 
     src_points[2] = np.ones(temp_src_points.shape[0])
     
-    # print(x_img_min, y_img_min)
     # plt.figure()
     # plt.gca().invert_yaxis()
     # plt.plot(xs,ys) 
     # plt.plot(xd,yd)
     # plt.scatter(src_points[0], src_points[1]) 
     # plt.show()
+    # print('points', src_points)
     
     src_inv_homography = np.linalg.inv(src_homography)    
 
     src_coords = src_inv_homography @ src_points
     src_coords = np.divide(src_coords, src_coords[2]).astype(int)    
     
-    # print('points', src_points)
-    # print('coords', src_coords)
-
-    pano_image[src_points[1, :], src_points[0, :]] = img1[src_coords[1, :], src_coords[0, :]]
+    # print('points', np.min(np.add(src_points[1, :], abs(y_img_min))), np.min(src_points[0, :]))
+    # print('points max', np.max(np.add(src_points[1, :], abs(y_img_min))), np.max(src_points[0, :]))
+    # print('coords', np.min(src_coords[1, :]), np.min(src_coords[0, :]))
+    # print('pano dim', pano_image.shape)
+    # print('shift by', y_img_min)
     
-    return pano_image
+    
+    try:
+        pano_image[np.add(src_points[1, :], abs(y_img_min)), src_points[0, :]] = img1[src_coords[1, :], src_coords[0, :]]
+    except:
+        print("FAILED")
+        plt.imshow(pano_image)
+        plt.show()
+        raise
+    return pano_image, y_img_min
     
 def get_polygon(homography, x_bound, y_bound):
 
@@ -208,27 +221,28 @@ if __name__ == "__main__":
     images = os.listdir(images_path)
     images = natsort.natsorted(images) #sorts images by number
     
-    # base_img = os.path.join(images_path, images[0])
+    pano_img_path = os.path.join(images_path, pano_image_path)
+    
     previous_homographies = []
-    for index in range(1, len(images) - 3):
+    previous_y_shift = 0
+    
+    for index in range(1, len(images) - 1):
 
         src_img_path = os.path.join(images_path, images[index])
         des_img_path = os.path.join(images_path, images[index - 1])
-        
-        pano_img_path = os.path.join(images_path, pano_image_path)
         
         src_img = cv2.imread(src_img_path, cv2.IMREAD_GRAYSCALE)
         des_img = cv2.imread(des_img_path, cv2.IMREAD_GRAYSCALE)
         
         matching_keypoints = find_keypoints(src_img, des_img)
         
-        iterations = math.ceil(math.log(1-0.99)/ math.log(1- (1-0.5)**4))
+        iterations = math.ceil(math.log(1-0.99)/ math.log(1- (1-0.7)**4))
         homography = find_homography_matrix(matching_keypoints, iterations=iterations)
         
         if index == 1:
-            pano_image = warp_images(src_img_path, des_img_path, homography, previous_homographies, pano_path='')
+            pano_image, previous_y_shift = warp_images(src_img_path, des_img_path, homography, previous_homographies, previous_y_shift, pano_path='')
         else:
-            pano_image = warp_images(src_img_path, des_img_path, homography, previous_homographies, pano_path=pano_img_path)
+            pano_image, previous_y_shift = warp_images(src_img_path, des_img_path, homography, previous_homographies, previous_y_shift, pano_path=pano_img_path)
         
         cv2.imwrite(pano_img_path, pano_image)    
         # cv2.imshow("image", pano_image)
@@ -237,7 +251,7 @@ if __name__ == "__main__":
         previous_homographies.append(homography)
         print(index)
     
-    print("Panoramic Image saved at", src_img_path)
+    print("Panoramic Image saved at", pano_img_path)
         
         
         
