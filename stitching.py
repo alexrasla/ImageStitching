@@ -1,5 +1,4 @@
 import math
-from nis import match
 from matplotlib.path import Path
 import cv2
 import argparse
@@ -7,14 +6,16 @@ import os
 from matplotlib import pyplot as plt
 import natsort
 import numpy as np
-from shapely.geometry import Polygon, Point
-import time
+# import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--images")
 args = parser.parse_args()
 
 def find_keypoints(src_img, dest_img):
+    '''
+    Uses SIFT to find keypoints between two images
+    '''
     
     sift = cv2.SIFT_create()
     kp1, des1 = sift.detectAndCompute(src_img, None)
@@ -31,9 +32,6 @@ def find_keypoints(src_img, dest_img):
         
         keypoints.append([p1, p2])
 
-    # img3 = cv2.drawMatches(src_img,kp1,des_img,kp2, matches[:50], src_img)
-    # plt.imshow(img3)
-    # plt.show()
     keypoints = np.array([np.array(xi) for xi in keypoints])
     
     return keypoints
@@ -73,7 +71,9 @@ def find_homography_matrix(keypoints, iterations=100, epsilon=4):
     return best_homography
     
 def calculate_homography_matrix(keypoints):
-    
+    '''
+    Computes homography matrix using keypoints between two images
+    '''
     A = np.zeros(shape=(2*len(keypoints),9))
     
     for index in range(0, len(keypoints)):
@@ -97,13 +97,20 @@ def calculate_homography_matrix(keypoints):
     return np.reshape(homography, (3, 3))
     
 def warp_images(src_img_path, des_img_path, des_homography, prev_homographies, previous_y_shift, previous_x_shift, pano_path):
-   
+    '''
+    Warp the src image into the des image using the homography mapping between them (des_homography).
+    The prev_homographies accounts for all the previously calculated homographies so we can do transformations like
+    H13 = H12 @ H23. The previous_y_shift and previous_x_shift account for the previous shifts in the panoramic images
+    caused by adding a new image.
+    '''
+    
     img1 = cv2.imread(src_img_path)
     img2 = cv2.imread(des_img_path)
     
     img1_y_bound, img1_x_bound, _ = img1.shape
     img2_y_bound, img2_x_bound, _ = img2.shape
     
+    #get polygons of images shifted by homographies to compute new bounding boxes and panoramic image dimensions
     if len(prev_homographies) > 0:
         src_homography = np.identity(3)
         for hmg in prev_homographies:
@@ -129,7 +136,7 @@ def warp_images(src_img_path, des_img_path, des_homography, prev_homographies, p
     des_img_height = y_img_max - y_img_min
     des_img_width  = x_img_max - x_img_min
     
-    #copy old panoramic to new one
+    #copy old panoramic to new one if exists, with shifts taken into account
     if pano_path == '':        
         pano_start = abs(y_img_min)
         pano_end = img2.shape[0] + pano_start
@@ -154,11 +161,6 @@ def warp_images(src_img_path, des_img_path, des_homography, prev_homographies, p
             pano_image[y_pano_start:y_pano_end, x_pano_start:x_pano_end] = prev_pano_image[0:prev_height_end, 0:prev_width_end]
         except:
             print("FAILED TO ADD PREVIOUS PANO")
-            print('width', x_pano_start, x_pano_end)
-            print('height', y_pano_start, y_pano_end)
-            print('prev shift', previous_y_shift)
-            print('curr', pano_image.shape)
-            print('prev', prev_pano_image.shape)
             plt.imshow(prev_pano_image)
             plt.show()
             raise
@@ -168,13 +170,13 @@ def warp_images(src_img_path, des_img_path, des_homography, prev_homographies, p
     points = np.vstack((x,y)).T
         
     grid = src_polygon.contains_points(points)
-    mask = grid.reshape(des_img_height, des_img_width).T # now you have a mask with points inside a polygon
+    mask = grid.reshape(des_img_height, des_img_width).T # mask with points inside polygon
     
     temp_src_points = np.argwhere(mask)
     
     src_points = np.empty((3, temp_src_points.shape[0]), dtype=int)
-    src_points[0] = np.add(temp_src_points[:, 0], x_img_min) #shift the homography image to new place
-    src_points[1] = np.add(temp_src_points[:, 1], y_img_min) 
+    src_points[0] = np.add(temp_src_points[:, 0], x_img_min) #shift the homography image to new x place
+    src_points[1] = np.add(temp_src_points[:, 1], y_img_min) #shift the homography image to new y place
     src_points[2] = np.ones(temp_src_points.shape[0])
     
     # plt.figure()
@@ -183,8 +185,6 @@ def warp_images(src_img_path, des_img_path, des_homography, prev_homographies, p
     # plt.plot(xd,yd)
     # plt.scatter(src_points[0], src_points[1]) 
     # plt.show()
-    # print('points', src_points)
-    # print('prev y', previous_y_shift, y_img_min, abs(min(y_img_min, previous_y_shift)))
     
     src_inv_homography = np.linalg.inv(src_homography)    
 
@@ -195,10 +195,6 @@ def warp_images(src_img_path, des_img_path, des_homography, prev_homographies, p
         pano_image[np.add(src_points[1, :], abs(min(y_img_min, previous_y_shift))), np.add(src_points[0, :], abs(min(x_img_min, 0)))] = img1[src_coords[1, :], src_coords[0, :]]
     except:
         print("FAILED")
-        print('width', prev_width_end)
-        print('height', prev_height_end)
-        print('curr', pano_image.shape)
-        print('prev', prev_pano_image.shape)
         plt.imshow(pano_image)
         plt.show()
         raise
@@ -236,11 +232,13 @@ if __name__ == "__main__":
     previous_homographies = []
     previous_y_shift, previous_x_shift = 0, 0
     
-    start_image_idx = 5
+    start_image_idx = len(images) // 2
     
     print('-------------------------')
     print('STARTING LEFT TO RIGHT...')
-    for index in range(start_image_idx, 8):
+    print('Added', os.path.join(images_path, images[start_image_idx - 1]))
+
+    for index in range(start_image_idx, start_image_idx+4):
 
         src_img_path = os.path.join(images_path, images[index])
         des_img_path = os.path.join(images_path, images[index - 1])
@@ -258,11 +256,8 @@ if __name__ == "__main__":
         else:
             pano_image, previous_y_shift, previous_x_shift = warp_images(src_img_path, des_img_path, homography, previous_homographies, previous_y_shift, previous_x_shift, pano_path=pano_img_path)
         
-        #keep track of previous total y shifts?
         cv2.imwrite(pano_img_path, pano_image)    
-        # cv2.imshow("image", pano_image)
-        # cv2.waitKey(0)
-        
+    
         previous_homographies.append(homography)
         print('Added', src_img_path)
         
@@ -273,7 +268,7 @@ if __name__ == "__main__":
     previous_x_shift, previous_y_shift = 0, previous_y_shift
     previous_homographies = []
     
-    for index in range(start_image_idx-1, 1, -1):
+    for index in range(start_image_idx-1, start_image_idx-5, -1):
     
         src_img_path = os.path.join(images_path, images[index-1])
         des_img_path = os.path.join(images_path, images[index])
@@ -287,11 +282,10 @@ if __name__ == "__main__":
         homography = find_homography_matrix(matching_keypoints, iterations=iterations)
         
         pano_image, previous_y_shift, previous_x_shift = warp_images(src_img_path, des_img_path, homography, previous_homographies, previous_y_shift, previous_x_shift, pano_path=pano_img_path)
-        # previous_y_shift += y_shift
         
         cv2.imwrite(pano_img_path, pano_image)    
-        cv2.imshow('img', pano_image)
-        cv2.waitKey(0)
+        # cv2.imshow('img', pano_image)
+        # cv2.waitKey(0)
         
         previous_homographies.append(homography)
         print('Added', src_img_path)
