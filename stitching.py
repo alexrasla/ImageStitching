@@ -184,6 +184,7 @@ def warp_images(src_img_path, des_img_path, des_homography, prev_homographies, p
     # plt.scatter(src_points[0], src_points[1]) 
     # plt.show()
     # print('points', src_points)
+    # print('prev y', previous_y_shift, y_img_min, abs(min(y_img_min, previous_y_shift)))
     
     src_inv_homography = np.linalg.inv(src_homography)    
 
@@ -191,7 +192,7 @@ def warp_images(src_img_path, des_img_path, des_homography, prev_homographies, p
     src_coords = np.divide(src_coords, src_coords[2]).astype(int)
     
     try:
-        pano_image[np.add(src_points[1, :], abs(y_img_min)), np.add(src_points[0, :], abs(min(x_img_min, 0)))] = img1[src_coords[1, :], src_coords[0, :]]
+        pano_image[np.add(src_points[1, :], abs(min(y_img_min, previous_y_shift))), np.add(src_points[0, :], abs(min(x_img_min, 0)))] = img1[src_coords[1, :], src_coords[0, :]]
     except:
         print("FAILED")
         print('width', prev_width_end)
@@ -201,7 +202,8 @@ def warp_images(src_img_path, des_img_path, des_homography, prev_homographies, p
         plt.imshow(pano_image)
         plt.show()
         raise
-    return pano_image, y_img_min, x_img_min
+    
+    return pano_image, min(y_img_min, previous_y_shift), x_img_min
     
 def get_polygon(homography, x_bound, y_bound):
 
@@ -235,6 +237,8 @@ if __name__ == "__main__":
     previous_y_shift, previous_x_shift = 0, 0
     
     start_image_idx = 5
+    
+    print('-------------------------')
     print('STARTING LEFT TO RIGHT...')
     for index in range(start_image_idx, 8):
 
@@ -260,12 +264,13 @@ if __name__ == "__main__":
         # cv2.waitKey(0)
         
         previous_homographies.append(homography)
-        print(index, previous_x_shift)
+        print('Added', src_img_path)
+        
     #add to pano from left
     print('-------------------------')
     print('STARTING RIGHT TO LEFT...')
    
-    previous_x_shift = 0
+    previous_x_shift, previous_y_shift = 0, previous_y_shift
     previous_homographies = []
     
     for index in range(start_image_idx-1, 1, -1):
@@ -282,9 +287,10 @@ if __name__ == "__main__":
         homography = find_homography_matrix(matching_keypoints, iterations=iterations)
         
         pano_image, previous_y_shift, previous_x_shift = warp_images(src_img_path, des_img_path, homography, previous_homographies, previous_y_shift, previous_x_shift, pano_path=pano_img_path)
+        # previous_y_shift += y_shift
         
         cv2.imwrite(pano_img_path, pano_image)    
-        cv2.imshow("image", pano_image)
+        cv2.imshow('img', pano_image)
         cv2.waitKey(0)
         
         previous_homographies.append(homography)
